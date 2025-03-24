@@ -1,11 +1,12 @@
 import tkinter as tk
-from tkinter import messagebox, ttk, simpledialog  # Added simpledialog to the imports
+from tkinter import messagebox, ttk, simpledialog
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Rectangle
+import numpy as np
+import sv_ttk  # Added for rounded buttons
 
-# Rest of the DeadlockDetector class remains unchanged
 class DeadlockDetector:
     def __init__(self, processes, resources, allocation, request, resource_quantities):
         self.processes = processes
@@ -38,22 +39,29 @@ class DeadlockDetector:
 
     def draw_rag(self, G, cycle_edges=None):
         pos = nx.spring_layout(G, seed=42)
-        fig, ax = plt.subplots(figsize=(8, 6))
+        fig, ax = plt.subplots(figsize=(10, 7))
+        
         process_nodes = [node for node in G.nodes if G.nodes[node]['type'] == 'process']
-        nx.draw_networkx_nodes(G, pos, nodelist=process_nodes, node_shape='o', node_color='lightblue', node_size=3000, ax=ax)
-        nx.draw_networkx_labels(G, pos, labels={node: node for node in process_nodes}, font_size=10, font_weight='bold', ax=ax)
-
+        nx.draw_networkx_nodes(G, pos, nodelist=process_nodes, node_shape='o', 
+                             node_color='#87CEEB', node_size=3500, alpha=0.9, ax=ax)
+        
         resource_nodes = [node for node in G.nodes if G.nodes[node]['type'] == 'resource']
-        for node in resource_nodes:
-            x, y = pos[node]
-            rect = Rectangle((x - 0.1, y - 0.05), 0.2, 0.1, color='lightgreen', alpha=0.7)
-            ax.add_patch(rect)
-            ax.text(x, y, f"{node}\n({G.nodes[node]['quantity']})", ha='center', va='center', fontsize=10, fontweight='bold')
+        nx.draw_networkx_nodes(G, pos, nodelist=resource_nodes, node_shape='s',
+                             node_color='#98FB98', node_size=2500, alpha=0.9, ax=ax)
 
-        nx.draw_networkx_edges(G, pos, edgelist=G.edges, edge_color='black', width=1, arrows=True, ax=ax)
+        labels = {node: f"{node}\n({G.nodes[node].get('quantity', '')})" if G.nodes[node]['type'] == 'resource' 
+                 else node for node in G.nodes}
+        nx.draw_networkx_labels(G, pos, labels, font_size=12, font_weight='bold', ax=ax)
+
+        nx.draw_networkx_edges(G, pos, edge_color='gray', width=2, arrows=True, 
+                             arrowsize=20, ax=ax)
         if cycle_edges:
-            nx.draw_networkx_edges(G, pos, edgelist=[(u, v) for u, v, _ in cycle_edges], edge_color='red', width=2, arrows=True, connectionstyle="arc3,rad=0.2", ax=ax)
-        ax.set_title("Resource Allocation Graph (RAG)")
+            nx.draw_networkx_edges(G, pos, edgelist=[(u, v) for u, v, _ in cycle_edges],
+                                 edge_color='red', width=3, arrows=True, 
+                                 arrowsize=25, connectionstyle="arc3,rad=0.2", ax=ax)
+
+        ax.set_title("Resource Allocation Graph", fontsize=16, pad=20)
+        ax.grid(True, linestyle='--', alpha=0.3)
         ax.axis('off')
         return fig
 
@@ -69,193 +77,220 @@ class MatrixDialog(tk.Toplevel):
         self.entries = []
         self.create_widgets()
         self.grab_set()
-        self.geometry("+%d+%d" % (parent.winfo_rootx()+50, parent.winfo_rooty()+50))
+        self.configure(bg='#f0f0f0')
+        self.geometry(f"400x{num_processes*50+100}+{parent.winfo_rootx()+100}+{parent.winfo_rooty()+100}")
 
     def create_widgets(self):
-        frame = ttk.Frame(self, padding="10")
-        frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        frame = ttk.Frame(self, padding="15", style='Matrix.TFrame')
+        frame.pack(fill='both', expand=True)
 
+        ttk.Label(frame, text=f"{self.matrix_type} Matrix", style='Header.TLabel').pack(pady=10)
+        
+        entry_frame = ttk.Frame(frame)
+        entry_frame.pack()
+        
         for i in range(self.num_processes):
-            ttk.Label(frame, text=f"P{i+1}").grid(row=i+1, column=0, padx=5, pady=5)
+            ttk.Label(entry_frame, text=f"P{i+1}", style='Process.TLabel').grid(row=i, column=0, padx=5, pady=5)
             row_entries = []
             for j in range(self.num_resources):
-                entry = ttk.Entry(frame, width=5)
-                entry.grid(row=i+1, column=j+1, padx=2, pady=2)
+                entry = ttk.Entry(entry_frame, width=5, justify='center')
+                entry.grid(row=i, column=j+1, padx=3, pady=3)
+                entry.insert(0, "0")
                 row_entries.append(entry)
             self.entries.append(row_entries)
 
-        ttk.Label(frame, text=f"{self.matrix_type} Matrix").grid(row=0, column=0, columnspan=self.num_resources+1, pady=5)
-        ttk.Button(frame, text="Submit", command=self.submit).grid(row=self.num_processes+1, column=0, columnspan=self.num_resources+1, pady=10)
+        ttk.Button(frame, text="Submit", command=self.submit, style='Action.TButton').pack(pady=15)
 
     def submit(self):
         try:
             matrix = []
             for row_entries in self.entries:
-                row = [int(entry.get()) for entry in row_entries if entry.get()]
-                if len(row) != self.num_resources:
-                    raise ValueError
+                row = [int(entry.get()) for entry in row_entries]
                 if any(x < 0 for x in row):
                     raise ValueError
                 matrix.append(row)
             self.result = matrix
             self.destroy()
         except ValueError:
-            messagebox.showerror("Error", "Please enter valid non-negative integers for all fields")
+            messagebox.showerror("Error", "Please enter valid non-negative integers")
 
 class DeadlockApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Deadlock Detection System")
-        self.root.geometry("1000x700")
+        self.root.geometry("1200x800")
+        self.root.configure(bg='#f5f5f5')
 
-        self.num_processes = tk.IntVar(value=0)
-        self.num_resources = tk.IntVar(value=0)
+        self.num_processes = tk.IntVar(value=2)
+        self.num_resources = tk.IntVar(value=2)
         self.resource_quantities = {}
         self.allocation = []
         self.request = []
 
-        self.main_frame = ttk.Frame(self.root, padding="10")
-        self.main_frame.pack(expand=True, fill='both')
-        
-        self.status_var = tk.StringVar(value="Ready")
+        self.setup_styles()
         self.create_widgets()
-        
         self.canvas = None
 
+    def setup_styles(self):
+        # Use sv-ttk theme for rounded buttons
+        sv_ttk.set_theme('light')  # Use light theme for a look similar to the image
+
+        style = ttk.Style()
+        
+        style.configure('TFrame', background='#f5f5f5')
+        style.configure('Matrix.TFrame', background='#ffffff', relief='flat')
+        style.configure('Header.TLabel', font=('Helvetica', 14, 'bold'), background='#f5f5f5')
+        style.configure('Process.TLabel', font=('Helvetica', 10, 'bold'), foreground='#2F4F4F')
+        style.configure('Action.TButton', font=('Helvetica', 10), padding=5)
+        
+        # Configure button styles with colors (sv-ttk already provides rounded corners)
+        style.configure('Green.TButton', foreground='black', font=('Helvetica', 10), padding=5)
+        style.map('Green.TButton', background=[('!disabled', '#98FB98'), ('active', '#90EE90')])
+        style.configure('Blue.TButton', foreground='black', font=('Helvetica', 10), padding=5)
+        style.map('Blue.TButton', background=[('!disabled', '#87CEEB'), ('active', '#ADD8E6')])
+        style.configure('Orange.TButton', foreground='black', font=('Helvetica', 10), padding=5)
+        style.map('Orange.TButton', background=[('!disabled', '#FFA500'), ('active', '#FF8C00')])
+        style.configure('Red.TButton', foreground='white', font=('Helvetica', 10), padding=5)
+        style.map('Red.TButton', background=[('!disabled', '#FF6347'), ('active', '#FF4500')])
+
     def create_widgets(self):
-        # Input Frame
-        input_frame = ttk.LabelFrame(self.main_frame, text="System Configuration", padding="10")
-        input_frame.pack(fill='x', pady=5)
+        # Main container centered at the top
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(side='top', pady=20)  # Position at top middle
 
-        ttk.Label(input_frame, text="Number of Processes:").grid(row=0, column=0, padx=5, pady=5)
-        ttk.Entry(input_frame, textvariable=self.num_processes, width=5).grid(row=0, column=1, padx=5, pady=5)
+        # Inner container for all widgets
+        container = ttk.Frame(main_frame, padding="15")
+        container.pack(expand=True)  # Center the container within main_frame
 
-        ttk.Label(input_frame, text="Number of Resources:").grid(row=0, column=2, padx=5, pady=5)
-        ttk.Entry(input_frame, textvariable=self.num_resources, width=5).grid(row=0, column=3, padx=5, pady=5)
+        # Configuration Panel
+        config_frame = ttk.LabelFrame(container, text="System Configuration", padding="10")
+        config_frame.pack(pady=10)
 
-        # Button Frame
-        button_frame = ttk.LabelFrame(self.main_frame, text="Actions", padding="10")
-        button_frame.pack(fill='x', pady=5)
+        config_entries = [
+            ("Processes:", self.num_processes, 0),
+            ("Resources:", self.num_resources, 2)
+        ]
+        
+        for label, var, col in config_entries:
+            ttk.Label(config_frame, text=label).grid(row=0, column=col, padx=5, pady=5)
+            ttk.Spinbox(config_frame, from_=1, to=10, textvariable=var, width=5).grid(row=0, column=col+1, padx=5, pady=5)
+
+        # Control Panel
+        control_frame = ttk.LabelFrame(container, text="Controls", padding="10")
+        control_frame.pack(pady=10)
 
         buttons = [
-            ("Enter Resource Quantities", self.enter_resource_quantities, "lightgreen"),
-            ("Enter Allocation Matrix", self.enter_allocation, "lightblue"),
-            ("Enter Request Matrix", self.enter_request, "lightblue"),
-            ("Show RAG", self.show_rag, "orange"),
-            ("Detect Deadlock", self.detect_deadlock, "orange"),
-            ("Analyze RAG Image", self.analyze_rag_image, "yellow"),
-            ("Clear All", self.clear_all, "gray"),
-            ("Exit", self.root.quit, "red")
+            ("Resource Quantities", self.enter_resource_quantities, "Green"),
+            ("Allocation Matrix", self.enter_allocation, "Blue"),
+            ("Request Matrix", self.enter_request, "Blue"),
+            ("Show RAG", self.show_rag, "Orange"),
+            ("Detect Deadlock", self.detect_deadlock, "Orange"),
+            ("Analyze Image", self.analyze_rag_image, "Orange"),
+            ("Save Graph", self.save_graph, "Green"),
+            ("Clear", self.clear_all, "Red")
         ]
 
         for i, (text, command, color) in enumerate(buttons):
-            btn = ttk.Button(button_frame, text=text, command=command)
-            btn.grid(row=i//4, column=i%4, padx=5, pady=5)
-            btn.configure(style=f"{color}.TButton")
+            ttk.Button(control_frame, text=text, command=command, 
+                      style=f"{color}.TButton").grid(row=i//4, column=i%4, padx=5, pady=5, sticky='ew')
 
-        # Status Bar
-        status_bar = ttk.Label(self.main_frame, textvariable=self.status_var, relief="sunken", anchor="w")
-        status_bar.pack(fill='x', side='bottom', pady=5)
+        # Status and Info Panel
+        self.status_var = tk.StringVar(value="Welcome! Configure the system to begin.")
+        status_frame = ttk.Frame(container)
+        status_frame.pack(pady=10)
+        
+        ttk.Label(status_frame, textvariable=self.status_var, relief="sunken", 
+                 padding=5, background='#e0e0e0').pack()
 
-        # Configure button styles
-        style = ttk.Style()
-        for color in set(btn[2] for btn in buttons):
-            style.configure(f"{color}.TButton", background=color)
+        # Graph Display Area
+        self.graph_frame = ttk.Frame(container)
+        self.graph_frame.pack(pady=10)
 
     def enter_resource_quantities(self):
         try:
             num_resources = self.num_resources.get()
-            if num_resources <= 0:
-                raise ValueError
             self.resource_quantities = {}
             for i in range(num_resources):
-                quantity = simpledialog.askinteger("Input", f"Enter quantity for Resource R{i + 1}:", minvalue=0)
+                quantity = simpledialog.askinteger("Input", f"Resource R{i + 1} Quantity:", 
+                                                minvalue=0, parent=self.root)
                 if quantity is None:
                     raise ValueError
                 self.resource_quantities[f"R{i + 1}"] = quantity
-            self.status_var.set(f"Resource quantities entered for {num_resources} resources")
+            self.status_var.set(f"Set quantities for {num_resources} resources")
         except ValueError:
-            messagebox.showerror("Error", "Please enter valid positive numbers")
+            messagebox.showwarning("Warning", "Invalid input. Please try again.")
 
     def enter_allocation(self):
-        try:
-            num_processes = self.num_processes.get()
-            num_resources = self.num_resources.get()
-            if num_processes <= 0 or num_resources <= 0:
-                raise ValueError
-            dialog = MatrixDialog(self.root, "Enter Allocation Matrix", num_processes, num_resources, "Allocation")
-            self.root.wait_window(dialog)
-            if dialog.result:
-                self.allocation = dialog.result
-                self.status_var.set(f"Allocation matrix entered for {num_processes}x{num_resources}")
-        except ValueError:
-            messagebox.showerror("Error", "Please set valid number of processes and resources first")
+        dialog = MatrixDialog(self.root, "Allocation Matrix", 
+                           self.num_processes.get(), self.num_resources.get(), "Allocation")
+        self.root.wait_window(dialog)
+        if dialog.result:
+            self.allocation = dialog.result
+            self.status_var.set(f"Allocation matrix updated ({self.num_processes.get()}x{self.num_resources.get()})")
 
     def enter_request(self):
-        try:
-            num_processes = self.num_processes.get()
-            num_resources = self.num_resources.get()
-            if num_processes <= 0 or num_resources <= 0:
-                raise ValueError
-            dialog = MatrixDialog(self.root, "Enter Request Matrix", num_processes, num_resources, "Request")
-            self.root.wait_window(dialog)
-            if dialog.result:
-                self.request = dialog.result
-                self.status_var.set(f"Request matrix entered for {num_processes}x{num_resources}")
-        except ValueError:
-            messagebox.showerror("Error", "Please set valid number of processes and resources first")
+        dialog = MatrixDialog(self.root, "Request Matrix", 
+                           self.num_processes.get(), self.num_resources.get(), "Request")
+        self.root.wait_window(dialog)
+        if dialog.result:
+            self.request = dialog.result
+            self.status_var.set(f"Request matrix updated ({self.num_processes.get()}x{self.num_resources.get()})")
 
     def show_rag(self):
-        if not self.validate_inputs():
-            return
+        if not self.validate_inputs(): return
         detector = self.create_detector()
-        rag_graph = detector.build_rag()
-        fig = detector.draw_rag(rag_graph)
+        fig = detector.draw_rag(detector.build_rag())
         self.display_rag(fig)
-        self.status_var.set("RAG displayed")
+        self.status_var.set("Displaying Resource Allocation Graph")
 
     def detect_deadlock(self):
-        if not self.validate_inputs():
-            return
+        if not self.validate_inputs(): return
         detector = self.create_detector()
         rag_graph = detector.build_rag()
         deadlock, cycle = detector.detect_deadlock(rag_graph)
         fig = detector.draw_rag(rag_graph, cycle if deadlock else None)
         self.display_rag(fig)
-        self.status_var.set("Deadlock detection completed")
-        messagebox.showinfo("Result", "Deadlock detected" if deadlock else "No deadlock detected")
+        self.status_var.set(f"Deadlock {'detected!' if deadlock else 'not found'}")
+        messagebox.showinfo("Detection Result", 
+                          f"Deadlock {'detected!' if deadlock else 'not found'}\n"
+                          f"Cycle: {[(u,v) for u,v,_ in cycle] if deadlock else 'None'}")
 
     def analyze_rag_image(self):
         file_path = tk.filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
-        if not file_path:
-            return
-        processes = ["P1", "P2"]
-        resources = ["R1", "R2"]
-        resource_quantities = {"R1": 1, "R2": 1}
-        allocation = [[1, 0], [0, 1]]
-        request = [[0, 1], [1, 0]]
-        detector = DeadlockDetector(processes, resources, allocation, request, resource_quantities)
+        if not file_path: return
+        processes = [f"P{i+1}" for i in range(2)]
+        resources = [f"R{i+1}" for i in range(2)]
+        detector = DeadlockDetector(processes, resources, [[1,0],[0,1]], [[0,1],[1,0]], {"R1":1, "R2":1})
         rag_graph = detector.build_rag()
         deadlock, cycle = detector.detect_deadlock(rag_graph)
         fig = detector.draw_rag(rag_graph, cycle if deadlock else None)
         self.display_rag(fig)
-        self.status_var.set("RAG image analyzed")
-        messagebox.showinfo("Result", "Deadlock detected in image" if deadlock else "No deadlock detected in image")
+        self.status_var.set("Image analysis completed")
+
+    def save_graph(self):
+        if not self.canvas: 
+            messagebox.showwarning("Warning", "No graph to save!")
+            return
+        file_path = tk.filedialog.asksaveasfilename(defaultextension=".png",
+                                                  filetypes=[("PNG files", "*.png")])
+        if file_path:
+            self.canvas.figure.savefig(file_path)
+            self.status_var.set(f"Graph saved to {file_path}")
 
     def clear_all(self):
-        self.num_processes.set(0)
-        self.num_resources.set(0)
+        self.num_processes.set(2)
+        self.num_resources.set(2)
         self.resource_quantities = {}
         self.allocation = []
         self.request = []
         if self.canvas:
             self.canvas.get_tk_widget().destroy()
             self.canvas = None
-        self.status_var.set("All data cleared")
+        self.status_var.set("System reset to initial state")
 
     def validate_inputs(self):
-        if not self.allocation or not self.request or not self.resource_quantities:
-            messagebox.showerror("Error", "Please enter all required data first")
+        if not all([self.allocation, self.request, self.resource_quantities]):
+            messagebox.showwarning("Warning", "Please complete all inputs first!")
             return False
         return True
 
@@ -267,9 +302,9 @@ class DeadlockApp:
     def display_rag(self, fig):
         if self.canvas:
             self.canvas.get_tk_widget().destroy()
-        self.canvas = FigureCanvasTkAgg(fig, master=self.main_frame)
+        self.canvas = FigureCanvasTkAgg(fig, master=self.graph_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(pady=10, expand=True)
+        self.canvas.get_tk_widget().pack()
 
 if __name__ == "__main__":
     root = tk.Tk()
