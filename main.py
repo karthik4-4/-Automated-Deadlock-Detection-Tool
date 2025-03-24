@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import messagebox, simpledialog
 import cv2
 import numpy as np
 import networkx as nx
@@ -110,8 +110,7 @@ class DeadlockDetector:
 class DeadlockApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Deadlock Detection System")
-        self.root.geometry("400x300")  # Set window size
+        self.root.withdraw()  # Hide the main window initially
 
         # Initialize deadlock detector
         self.detector = DeadlockDetector()
@@ -121,7 +120,7 @@ class DeadlockApp:
 
     def choose_mode(self):
         """Prompt the user to choose between manual entry and image upload."""
-        self.mode_window = tk.Toplevel(self.root)
+        self.mode_window = tk.Toplevel()
         self.mode_window.title("Choose Mode")
         self.mode_window.geometry("300x150")
 
@@ -133,32 +132,61 @@ class DeadlockApp:
         """Handle manual entry of processes, resources, allocation, and request."""
         self.mode_window.destroy()
 
-        # Input: Number of processes and resources
-        num_processes = simpledialog.askinteger("Input", "Enter the number of processes:")
-        num_resources = simpledialog.askinteger("Input", "Enter the number of resources:")
+        # Create a new window for manual entry
+        self.manual_window = tk.Toplevel()
+        self.manual_window.title("Manual Entry")
+        self.manual_window.geometry("400x300")
 
-        # Input: Resource quantities
-        resource_quantities = {}
+        # Input: Number of processes and resources
+        tk.Label(self.manual_window, text="Number of Processes:").grid(row=0, column=0, padx=10, pady=5)
+        self.num_processes_entry = tk.Entry(self.manual_window)
+        self.num_processes_entry.grid(row=0, column=1, padx=10, pady=5)
+
+        tk.Label(self.manual_window, text="Number of Resources:").grid(row=1, column=0, padx=10, pady=5)
+        self.num_resources_entry = tk.Entry(self.manual_window)
+        self.num_resources_entry.grid(row=1, column=1, padx=10, pady=5)
+
+        # Button to proceed to resource quantities
+        tk.Button(self.manual_window, text="Next", command=self.enter_resource_quantities, bg="orange").grid(row=2, column=0, columnspan=2, padx=10, pady=10)
+
+    def enter_resource_quantities(self):
+        """Input quantities for each resource."""
+        try:
+            num_processes = int(self.num_processes_entry.get())
+            num_resources = int(self.num_resources_entry.get())
+        except ValueError:
+            messagebox.showerror("Error", "Please enter valid numbers for processes and resources.")
+            return
+
+        self.resource_quantities = {}
         for i in range(num_resources):
             quantity = simpledialog.askinteger("Input", f"Enter quantity for Resource R{i + 1}:")
-            resource_quantities[f"R{i + 1}"] = quantity
+            self.resource_quantities[f"R{i + 1}"] = quantity
 
-        # Input: Allocation matrix
-        allocation = []
+        # Proceed to allocation and request matrices
+        self.enter_allocation_matrix(num_processes, num_resources)
+
+    def enter_allocation_matrix(self, num_processes, num_resources):
+        """Input allocation matrix."""
+        self.allocation = []
         for i in range(num_processes):
             row = simpledialog.askstring("Input", f"Enter allocation for Process P{i + 1} (space-separated):")
-            allocation.append(list(map(int, row.split())))
+            self.allocation.append(list(map(int, row.split())))
 
-        # Input: Request matrix
-        request = []
+        # Proceed to request matrix
+        self.enter_request_matrix(num_processes, num_resources)
+
+    def enter_request_matrix(self, num_processes, num_resources):
+        """Input request matrix."""
+        self.request = []
         for i in range(num_processes):
             row = simpledialog.askstring("Input", f"Enter request for Process P{i + 1} (space-separated):")
-            request.append(list(map(int, row.split())))
+            self.request.append(list(map(int, row.split())))
 
         # Build the RAG
         processes = [f"P{i + 1}" for i in range(num_processes)]
         resources = [f"R{i + 1}" for i in range(num_resources)]
-        self.detector.build_rag_manual(processes, resources, allocation, request, resource_quantities)
+        self.detector.build_rag_manual(processes, resources, self.allocation, self.request, self.resource_quantities)
 
         # Show the RAG
         self.show_rag()
@@ -166,6 +194,7 @@ class DeadlockApp:
     def upload_image(self):
         """Handle uploading and processing of RAG image."""
         self.mode_window.destroy()
+        self.root.deiconify()  # Show the main window
 
         file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
         if not file_path:
