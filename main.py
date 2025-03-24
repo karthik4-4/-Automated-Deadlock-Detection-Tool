@@ -3,9 +3,8 @@ from tkinter import messagebox, ttk, simpledialog
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.patches import Rectangle
 import numpy as np
-import sv_ttk  # Added for rounded buttons
+import sv_ttk  # For rounded buttons
 
 class DeadlockDetector:
     def __init__(self, processes, resources, allocation, request, resource_quantities):
@@ -30,12 +29,40 @@ class DeadlockDetector:
                     G.add_edge(self.processes[i], self.resources[j], weight=self.request[i][j])
         return G
 
-    def detect_deadlock(self, G):
-        try:
-            cycle = nx.find_cycle(G, orientation="original")
-            return True, cycle
-        except nx.NetworkXNoCycle:
-            return False, []
+    def detect_deadlock(self):
+        # Step 1: Calculate Available Resources
+        total_resources = list(self.resource_quantities.values())
+        total_allocated = [sum(self.allocation[i][j] for i in range(len(self.processes))) 
+                          for j in range(len(self.resources))]
+        available = [total_resources[j] - total_allocated[j] for j in range(len(self.resources))]
+
+        # Step 2: Initialize Work and Finish arrays
+        work = available.copy()
+        finish = [False] * len(self.processes)
+
+        # Step 3: Find a safe sequence
+        safe_sequence = []
+        steps = []  # To store the steps for explanation
+        while True:
+            found = False
+            for i in range(len(self.processes)):
+                if not finish[i] and all(self.request[i][j] <= work[j] for j in range(len(self.resources))):
+                    # Process can finish
+                    for j in range(len(self.resources)):
+                        work[j] += self.allocation[i][j]
+                    finish[i] = True
+                    safe_sequence.append(self.processes[i])
+                    steps.append((self.processes[i], work.copy()))
+                    found = True
+
+            if not found:
+                break
+
+        # Step 4: Check for deadlock
+        if all(finish):
+            return False, safe_sequence, steps  # No deadlock, system is in a safe state
+        else:
+            return True, [], steps  # Deadlock exists
 
     def draw_rag(self, G, cycle_edges=None):
         pos = nx.spring_layout(G, seed=42)
@@ -132,18 +159,13 @@ class DeadlockApp:
         self.canvas = None
 
     def setup_styles(self):
-        # Use sv-ttk theme for rounded buttons
-        sv_ttk.set_theme('light')  # Use light theme for a look similar to the image
-
+        sv_ttk.set_theme('light')
         style = ttk.Style()
-        
         style.configure('TFrame', background='#f5f5f5')
         style.configure('Matrix.TFrame', background='#ffffff', relief='flat')
         style.configure('Header.TLabel', font=('Helvetica', 14, 'bold'), background='#f5f5f5')
         style.configure('Process.TLabel', font=('Helvetica', 10, 'bold'), foreground='#2F4F4F')
         style.configure('Action.TButton', font=('Helvetica', 10), padding=5)
-        
-        # Configure button styles with colors (sv-ttk already provides rounded corners)
         style.configure('Green.TButton', foreground='black', font=('Helvetica', 10), padding=5)
         style.map('Green.TButton', background=[('!disabled', '#98FB98'), ('active', '#90EE90')])
         style.configure('Blue.TButton', foreground='black', font=('Helvetica', 10), padding=5)
@@ -154,15 +176,11 @@ class DeadlockApp:
         style.map('Red.TButton', background=[('!disabled', '#FF6347'), ('active', '#FF4500')])
 
     def create_widgets(self):
-        # Main container centered at the top
         main_frame = ttk.Frame(self.root)
-        main_frame.pack(side='top', pady=20)  # Position at top middle
-
-        # Inner container for all widgets
+        main_frame.pack(side='top', pady=20)
         container = ttk.Frame(main_frame, padding="15")
-        container.pack(expand=True)  # Center the container within main_frame
+        container.pack(expand=True)
 
-        # Configuration Panel
         config_frame = ttk.LabelFrame(container, text="System Configuration", padding="10")
         config_frame.pack(pady=10)
 
@@ -175,7 +193,6 @@ class DeadlockApp:
             ttk.Label(config_frame, text=label).grid(row=0, column=col, padx=5, pady=5)
             ttk.Spinbox(config_frame, from_=1, to=10, textvariable=var, width=5).grid(row=0, column=col+1, padx=5, pady=5)
 
-        # Control Panel
         control_frame = ttk.LabelFrame(container, text="Controls", padding="10")
         control_frame.pack(pady=10)
 
@@ -194,15 +211,12 @@ class DeadlockApp:
             ttk.Button(control_frame, text=text, command=command, 
                       style=f"{color}.TButton").grid(row=i//4, column=i%4, padx=5, pady=5, sticky='ew')
 
-        # Status and Info Panel
         self.status_var = tk.StringVar(value="Welcome! Configure the system to begin.")
         status_frame = ttk.Frame(container)
         status_frame.pack(pady=10)
-        
         ttk.Label(status_frame, textvariable=self.status_var, relief="sunken", 
                  padding=5, background='#e0e0e0').pack()
 
-        # Graph Display Area
         self.graph_frame = ttk.Frame(container)
         self.graph_frame.pack(pady=10)
 
@@ -246,14 +260,32 @@ class DeadlockApp:
     def detect_deadlock(self):
         if not self.validate_inputs(): return
         detector = self.create_detector()
-        rag_graph = detector.build_rag()
-        deadlock, cycle = detector.detect_deadlock(rag_graph)
-        fig = detector.draw_rag(rag_graph, cycle if deadlock else None)
-        self.display_rag(fig)
-        self.status_var.set(f"Deadlock {'detected!' if deadlock else 'not found'}")
-        messagebox.showinfo("Detection Result", 
-                          f"Deadlock {'detected!' if deadlock else 'not found'}\n"
-                          f"Cycle: {[(u,v) for u,v,_ in cycle] if deadlock else 'None'}")
+        deadlock, safe_sequence, steps = detector.detect_deadlock()
+
+        # Create a new window to display the table and explanation
+        result_window = tk.Toplevel(self.root)
+        result_window.title("Deadlock Detection Result")
+        result_window.geometry("600x400")
+        result_window.configure(bg='#f5f5f5')
+
+        # Display the result
+        if deadlock:
+            result_label = ttk.Label(result_window, text="Deadlock Detected!", font=('Helvetica', 14, 'bold'), background='#f5f5f5')
+            result_label.pack(pady=10)
+        else:
+            result_label = ttk.Label(result_window, text=f"No Deadlock. Safe Sequence: {safe_sequence}", font=('Helvetica', 14, 'bold'), background='#f5f5f5')
+            result_label.pack(pady=10)
+
+        # Display the steps
+        steps_frame = ttk.Frame(result_window)
+        steps_frame.pack(pady=10)
+
+        for step in steps:
+            process, work = step
+            step_label = ttk.Label(steps_frame, text=f"Process {process} finished. Work = {work}", background='#f5f5f5')
+            step_label.pack()
+
+        self.status_var.set("Deadlock detection completed")
 
     def analyze_rag_image(self):
         file_path = tk.filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
@@ -262,10 +294,13 @@ class DeadlockApp:
         resources = [f"R{i+1}" for i in range(2)]
         detector = DeadlockDetector(processes, resources, [[1,0],[0,1]], [[0,1],[1,0]], {"R1":1, "R2":1})
         rag_graph = detector.build_rag()
-        deadlock, cycle = detector.detect_deadlock(rag_graph)
-        fig = detector.draw_rag(rag_graph, cycle if deadlock else None)
-        self.display_rag(fig)
-        self.status_var.set("Image analysis completed")
+        deadlock, safe_sequence, steps = detector.detect_deadlock()
+        if deadlock:
+            self.status_var.set("Deadlock detected in image!")
+            messagebox.showinfo("Detection Result", "Deadlock detected in image!")
+        else:
+            self.status_var.set(f"No deadlock in image. Safe sequence: {safe_sequence}")
+            messagebox.showinfo("Detection Result", f"No deadlock in image. Safe sequence: {safe_sequence}")
 
     def save_graph(self):
         if not self.canvas: 
