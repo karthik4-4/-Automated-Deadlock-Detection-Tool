@@ -109,24 +109,53 @@ class DeadlockApp:
         num_resources = self.num_resources.get()
         self.resource_quantities = {}
         for i in range(num_resources):
-            quantity = simpledialog.askinteger("Input", f"Enter quantity for Resource R{i + 1}:")
-            self.resource_quantities[f"R{i + 1}"] = quantity
+            while True:
+                quantity = simpledialog.askinteger("Input", f"Enter quantity for Resource R{i + 1}:")
+                if quantity is not None and quantity >= 0:
+                    self.resource_quantities[f"R{i + 1}"] = quantity
+                    break
+                else:
+                    messagebox.showerror("Error", "Please enter a valid non-negative integer.")
 
     def enter_allocation(self):
         num_processes = self.num_processes.get()
         num_resources = self.num_resources.get()
         self.allocation = []
         for i in range(num_processes):
-            row = simpledialog.askstring("Input", f"Enter allocation for Process P{i + 1} (space-separated):")
-            self.allocation.append(list(map(int, row.split())))
+            while True:
+                row = simpledialog.askstring("Input", f"Enter allocation for Process P{i + 1} (space-separated):")
+                if row:
+                    try:
+                        row_values = list(map(int, row.split()))
+                        if len(row_values) == num_resources:
+                            self.allocation.append(row_values)
+                            break
+                        else:
+                            messagebox.showerror("Error", f"Please enter exactly {num_resources} values.")
+                    except ValueError:
+                        messagebox.showerror("Error", "Please enter valid integers.")
+                else:
+                    messagebox.showerror("Error", "Input cannot be empty.")
 
     def enter_request(self):
         num_processes = self.num_processes.get()
         num_resources = self.num_resources.get()
         self.request = []
         for i in range(num_processes):
-            row = simpledialog.askstring("Input", f"Enter request for Process P{i + 1} (space-separated):")
-            self.request.append(list(map(int, row.split())))
+            while True:
+                row = simpledialog.askstring("Input", f"Enter request for Process P{i + 1} (space-separated):")
+                if row:
+                    try:
+                        row_values = list(map(int, row.split()))
+                        if len(row_values) == num_resources:
+                            self.request.append(row_values)
+                            break
+                        else:
+                            messagebox.showerror("Error", f"Please enter exactly {num_resources} values.")
+                    except ValueError:
+                        messagebox.showerror("Error", "Please enter valid integers.")
+                else:
+                    messagebox.showerror("Error", "Input cannot be empty.")
 
     def show_rag(self):
         if not self.allocation or not self.request or not self.resource_quantities:
