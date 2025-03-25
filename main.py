@@ -43,6 +43,7 @@ class DeadlockDetector:
         # Step 3: Find a safe sequence
         safe_sequence = []
         steps = []  # To store the steps for explanation
+        steps.append(("Initial", work.copy()))
         while True:
             found = False
             for i in range(len(self.processes)):
@@ -90,6 +91,37 @@ class DeadlockDetector:
         ax.set_title("Resource Allocation Graph", fontsize=16, pad=20)
         ax.grid(True, linestyle='--', alpha=0.3)
         ax.axis('off')
+        return fig
+
+    def draw_allocation_table(self):
+        fig, ax = plt.subplots(figsize=(8, 4))  # Adjusted size for a more compact layout
+        ax.axis('off')
+
+        # Draw Allocation and Request Matrices
+        allocation_data = np.array(self.allocation)
+        request_data = np.array(self.request)
+
+        # Allocation Table
+        ax.text(0.25, 0.95, "Allocation", fontsize=12, fontweight='bold')
+        ax.text(0.35, 0.85, "Resource", fontsize=10, fontweight='bold')
+        table1 = ax.table(cellText=allocation_data, colLabels=self.resources, rowLabels=self.processes,
+                          loc='center left', cellLoc='center', colWidths=[0.1]*len(self.resources),
+                          bbox=[0.2, 0.2, 0.3, 0.5])
+        table1.auto_set_font_size(False)
+        table1.set_fontsize(10)
+
+        # Request Table
+        ax.text(0.65, 0.95, "Request", fontsize=12, fontweight='bold')
+        ax.text(0.75, 0.85, "Resource", fontsize=10, fontweight='bold')
+        table2 = ax.table(cellText=request_data, colLabels=self.resources, rowLabels=self.processes,
+                          loc='center right', cellLoc='center', colWidths=[0.1]*len(self.resources),
+                          bbox=[0.6, 0.2, 0.3, 0.5])
+        table2.auto_set_font_size(False)
+        table2.set_fontsize(10)
+
+        # Process label
+        ax.text(0.05, 0.5, "Process", fontsize=10, fontweight='bold', rotation=90, color='green')
+
         return fig
 
 class MatrixDialog(tk.Toplevel):
@@ -265,8 +297,14 @@ class DeadlockApp:
         # Create a new window to display the table and explanation
         result_window = tk.Toplevel(self.root)
         result_window.title("Deadlock Detection Result")
-        result_window.geometry("600x400")
+        result_window.geometry("800x600")
         result_window.configure(bg='#f5f5f5')
+
+        # Display the Resource Allocation Table
+        fig = detector.draw_allocation_table()
+        canvas = FigureCanvasTkAgg(fig, master=result_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(pady=10)
 
         # Display the result
         if deadlock:
@@ -276,14 +314,21 @@ class DeadlockApp:
             result_label = ttk.Label(result_window, text=f"No Deadlock. Safe Sequence: {safe_sequence}", font=('Helvetica', 14, 'bold'), background='#f5f5f5')
             result_label.pack(pady=10)
 
-        # Display the steps
+        # Display the steps in a table format
         steps_frame = ttk.Frame(result_window)
         steps_frame.pack(pady=10)
 
-        for step in steps:
+        # Create a table to display the steps
+        table = ttk.Treeview(steps_frame, columns=("Step", "Process", "Available"), show="headings")
+        table.heading("Step", text="Step")
+        table.heading("Process", text="Process")
+        table.heading("Available", text="Available Resources")
+        table.pack()
+
+        # Add the steps to the table
+        for i, step in enumerate(steps):
             process, work = step
-            step_label = ttk.Label(steps_frame, text=f"Process {process} finished. Work = {work}", background='#f5f5f5')
-            step_label.pack()
+            table.insert("", "end", values=(f"{i}", process, work))
 
         self.status_var.set("Deadlock detection completed")
 
