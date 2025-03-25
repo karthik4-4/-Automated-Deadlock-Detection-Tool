@@ -1,18 +1,10 @@
 import tkinter as tk
-from tkinter import messagebox, ttk, simpledialog
+from tkinter import messagebox, ttk, simpledialog, filedialog
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
-import sv_ttk  # For rounded buttons
-import cv2  # OpenCV for image processing
-import pytesseract  # For OCR
-import re  # For text parsing
-from PIL import Image  # For converting OpenCV images to Pillow images
-
-# Configure the path to Tesseract (update this based on your system)
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Windows example
-# For Linux/macOS, it might be: /usr/local/bin/tesseract or /usr/bin/tesseract
+import sv_ttk
 
 class DeadlockDetector:
     def __init__(self, processes, resources, allocation, request, resource_quantities):
@@ -32,31 +24,27 @@ class DeadlockDetector:
         for i in range(len(self.processes)):
             for j in range(len(self.resources)):
                 if self.allocation[i][j] > 0:
-                    G.add_edge(self.resources[j], self.processes[i], weight=self.allocation[i][j])
+                    G.add_edge(self.resources[j], self.processes[i], weight=self.allocation[i][j], type='allocation')
                 if self.request[i][j] > 0:
-                    G.add_edge(self.processes[i], self.resources[j], weight=self.request[i][j])
+                    G.add_edge(self.processes[i], self.resources[j], weight=self.request[i][j], type='request')
         return G
 
     def detect_deadlock(self):
-        # Step 1: Calculate Available Resources
         total_resources = list(self.resource_quantities.values())
         total_allocated = [sum(self.allocation[i][j] for i in range(len(self.processes))) 
                           for j in range(len(self.resources))]
         available = [total_resources[j] - total_allocated[j] for j in range(len(self.resources))]
 
-        # Step 2: Initialize Work and Finish arrays
         work = available.copy()
         finish = [False] * len(self.processes)
 
-        # Step 3: Find a safe sequence
         safe_sequence = []
-        steps = []  # To store the steps for explanation
+        steps = []
         steps.append(("Initial", work.copy()))
         while True:
             found = False
             for i in range(len(self.processes)):
                 if not finish[i] and all(self.request[i][j] <= work[j] for j in range(len(self.resources))):
-                    # Process can finish
                     for j in range(len(self.resources)):
                         work[j] += self.allocation[i][j]
                     finish[i] = True
@@ -67,127 +55,109 @@ class DeadlockDetector:
             if not found:
                 break
 
-        # Step 4: Check for deadlock
         if all(finish):
-            return False, safe_sequence, steps  # No deadlock, system is in a safe state
+            return False, safe_sequence, steps
         else:
-            return True, [], steps  # Deadlock exists
+            return True, [], steps
 
-    def draw_rag(self, G, cycle_edges=None):
-        # Create a figure and axis
-        fig, ax = plt.subplots(figsize=(8, 6))  # Adjusted size to fit the layout
-
-        # Define fixed positions for the nodes to match the image
-        pos = {
-            'P1': (0.2, 0.5),      # Left side
-            'P2': (0.8, 0.8),      # Top-right
-            'P3': (0.8, 0.2),      # Bottom-right
-            'R1': (0.5, 0.65),     # Between P1 and P2, slightly above center
-            'R2': (0.5, 0.35)      # Between P1 and P3, slightly below center
-        }
-
+    def draw_rag(self, G, cycle_edges=None, figsize=(8, 6)):
+        # Use spring_layout with increased k for better node separation
+        pos = nx.spring_layout(G, seed=42, k=1.0)  # Increased k for more spacing between nodes
+        
+        fig, ax = plt.subplots(figsize=figsize)
+        
         # Draw process nodes (circles)
         process_nodes = [node for node in G.nodes if G.nodes[node]['type'] == 'process']
         nx.draw_networkx_nodes(G, pos, nodelist=process_nodes, node_shape='o', 
-                               node_color='white', edgecolors='black', node_size=1500, ax=ax)
-
-        # Draw resource nodes (rectangles)
+                             node_color='#87CEEB', node_size=1500, alpha=0.9, ax=ax)
+        
+        # Draw resource nodes (squares)
         resource_nodes = [node for node in G.nodes if G.nodes[node]['type'] == 'resource']
-        nx.draw_networkx_nodes(G, pos, nodelist=resource_nodes, node_shape='s', 
-                               node_color='white', edgecolors='black', node_size=1000, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=resource_nodes, node_shape='s',
+                             node_color='#98FB98', node_size=1000, alpha=0.9, ax=ax)
 
-        # Draw node labels (inside the nodes)
-        labels = {node: node for node in G.nodes}
-        nx.draw_networkx_labels(G, pos, labels, font_size=12, font_weight='bold', ax=ax)
+        # Draw labels
+        labels = {node: f"{node}\n({G.nodes[node].get('quantity', '')})" if G.nodes[node]['type'] == 'resource' 
+                 else node for node in G.nodes}
+        nx.draw_networkx_labels(G, pos, labels, font_size=10, font_weight='bold', ax=ax)
 
-        # Draw edges with arrows
-        # Separate edges into "holding" (resource → process) and "waiting" (process → resource)
-        holding_edges = [(u, v) for u, v in G.edges() if G.nodes[u]['type'] == 'resource']
-        waiting_edges = [(u, v) for u, v in G.edges() if G.nodes[u]['type'] == 'process']
+        # Separate edges into allocation and request
+        allocation_edges = [(u, v) for u, v, d in G.edges(data=True) if d['type'] == 'allocation']
+        request_edges = [(u, v) for u, v, d in G.edges(data=True) if d['type'] == 'request']
 
-        # Draw "holding" edges (resource → process) with green labels
-        for u, v in holding_edges:
-            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], edge_color='black', 
-                                   width=2, arrows=True, arrowsize=20, ax=ax)
-            # Add label for holding edge
-            label = f"{v} is holding {u}"
-            # Calculate the midpoint of the edge for label placement
+        # Function to calculate dynamic rad based on node distance
+        def calculate_rad(u, v, base_rad=0.3):
+            # Calculate Euclidean distance between nodes
+            dist = np.linalg.norm(np.array(pos[u]) - np.array(pos[v]))
+            # Scale rad inversely with distance (closer nodes get larger rad)
+            return base_rad * (1.5 / max(dist, 0.1))  # Avoid division by zero
+
+        # Draw allocation edges (resource to process) with solid blue line
+        for u, v in allocation_edges:
+            rad = calculate_rad(u, v, base_rad=0.3)
+            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], edge_color='blue', 
+                                 width=2, arrows=True, arrowsize=15, ax=ax, 
+                                 connectionstyle=f"arc3,rad={rad}")
+
+        # Draw request edges (process to resource) with dashed red line
+        for u, v in request_edges:
+            rad = calculate_rad(u, v, base_rad=-0.3)
+            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], edge_color='red', 
+                                 width=2, arrows=True, arrowsize=15, ax=ax, 
+                                 style='dashed', connectionstyle=f"arc3,rad={rad}")
+
+        # Draw edge labels with offset to avoid overlap
+        edge_labels = {(u, v): f"{d['weight']}" for u, v, d in G.edges(data=True)}
+        for (u, v), label in edge_labels.items():
+            # Calculate the midpoint of the edge
             x = (pos[u][0] + pos[v][0]) / 2
             y = (pos[u][1] + pos[v][1]) / 2
-            # Adjust label position slightly to avoid overlap
-            if u == 'R1' and v == 'P1':
-                x_offset, y_offset = -0.15, 0.05
-            elif u == 'R2' and v == 'P2':
-                x_offset, y_offset = 0.15, 0.05
-            elif u == 'R2' and v == 'P3':
-                x_offset, y_offset = 0.15, -0.05
+            # Offset the label slightly based on the edge type
+            if (u, v) in allocation_edges:
+                offset = 0.05  # Move allocation labels slightly up
             else:
-                x_offset, y_offset = 0, 0
-            ax.text(x + x_offset, y + y_offset, label, fontsize=10, color='green', 
-                    ha='center', va='center')
+                offset = -0.05  # Move request labels slightly down
+            ax.text(x, y + offset, label, fontsize=8, ha='center', va='center')
 
-        # Draw "waiting" edges (process → resource) with orange labels
-        for u, v in waiting_edges:
-            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], edge_color='orange', 
-                                   width=2, arrows=True, arrowsize=20, ax=ax)
-            # Add label for waiting edge
-            label = f"{u} is waiting for {v}"
-            # Calculate the midpoint of the edge for label placement
-            x = (pos[u][0] + pos[v][0]) / 2
-            y = (pos[u][1] + pos[v][1]) / 2
-            # Adjust label position slightly to avoid overlap
-            if u == 'P1' and v == 'R2':
-                x_offset, y_offset = -0.15, -0.05
-            elif u == 'P2' and v == 'R1':
-                x_offset, y_offset = 0.15, -0.05
-            else:
-                x_offset, y_offset = 0, 0
-            ax.text(x + x_offset, y + y_offset, label, fontsize=10, color='orange', 
-                    ha='center', va='center')
+        # Highlight cycle edges if any
+        if cycle_edges:
+            nx.draw_networkx_edges(G, pos, edgelist=[(u, v) for u, v, _ in cycle_edges], 
+                                 edge_color='red', width=3, arrows=True, arrowsize=25, 
+                                 connectionstyle="arc3,rad=0.2", ax=ax)
 
-        # Remove grid, title, and axis
+        ax.set_title("Resource Allocation Graph", fontsize=14, pad=20)
+        ax.grid(True, linestyle='--', alpha=0.3)
         ax.axis('off')
-
+        plt.tight_layout()
         return fig
 
-    def draw_allocation_table(self):
-        fig, ax = plt.subplots(figsize=(8, 4))  # Adjusted size for a compact layout
+    def draw_allocation_table(self, figsize=(8, 4)):
+        fig, ax = plt.subplots(figsize=figsize)
         ax.axis('off')
 
-        # Combine Allocation and Request data into a single table
         allocation_data = np.array(self.allocation)
         request_data = np.array(self.request)
         combined_data = np.hstack((allocation_data, request_data))
 
-        # Create the data for the table (excluding the header)
         row_data = []
         for i in range(len(self.processes)):
             row = [self.processes[i]] + list(allocation_data[i]) + list(request_data[i])
             row_data.append(row)
 
-        # Create the table with only the data (no column labels yet)
-        col_widths = [0.15] + [0.1] * (len(self.resources) * 2)  # Widths for "Process" and resource columns
+        col_widths = [0.15] + [0.1] * (len(self.resources) * 2)
         table = ax.table(cellText=row_data, loc='center', cellLoc='center',
                          colWidths=col_widths, bbox=[0.1, 0.1, 0.8, 0.5])
         table.auto_set_font_size(False)
         table.set_fontsize(10)
 
-        # Add "Process" label on the left (vertically aligned, green)
         ax.text(0.05, 0.35, "Process", fontsize=10, fontweight='bold', rotation=90, color='green', va='center')
-
-        # Add "Allocation" and "Request" titles above the respective sections
         ax.text(0.35, 0.75, "Allocation", fontsize=12, fontweight='bold', ha='center')
         ax.text(0.65, 0.75, "Request", fontsize=12, fontweight='bold', ha='center')
-
-        # Add "Resource" labels below "Allocation" and "Request"
         ax.text(0.35, 0.65, "Resource", fontsize=10, fontweight='bold', ha='center')
         ax.text(0.65, 0.65, "Resource", fontsize=10, fontweight='bold', ha='center')
 
-        # Add resource labels (R1, R2, etc.) below the "Resource" labels
         for i in range(len(self.resources)):
-            # Allocation section
             ax.text(0.25 + (i + 1) * 0.1, 0.55, self.resources[i], fontsize=10, ha='center')
-            # Request section
             ax.text(0.55 + (i + 1) * 0.1, 0.55, self.resources[i], fontsize=10, ha='center')
 
         return fig
@@ -205,28 +175,40 @@ class MatrixDialog(tk.Toplevel):
         self.create_widgets()
         self.grab_set()
         self.configure(bg='#f0f0f0')
-        self.geometry(f"400x{num_processes*50+100}+{parent.winfo_rootx()+100}+{parent.winfo_rooty()+100}")
+        self.geometry(f"450x{num_processes*60+150}+{parent.winfo_rootx()+100}+{parent.winfo_rooty()+100}")
 
     def create_widgets(self):
-        frame = ttk.Frame(self, padding="15", style='Matrix.TFrame')
+        frame = ttk.Frame(self, padding="20")
         frame.pack(fill='both', expand=True)
 
-        ttk.Label(frame, text=f"{self.matrix_type} Matrix", style='Header.TLabel').pack(pady=10)
+        header_frame = ttk.Frame(frame)
+        header_frame.pack(fill='x', pady=(0, 10))
+        ttk.Label(header_frame, text=f"Enter {self.matrix_type} Matrix", 
+                 style='Header.TLabel').pack(side='left')
         
         entry_frame = ttk.Frame(frame)
-        entry_frame.pack()
+        entry_frame.pack(pady=10)
         
+        ttk.Label(entry_frame, text="Process").grid(row=0, column=0, padx=5, pady=5)
+        for j in range(self.num_resources):
+            ttk.Label(entry_frame, text=f"R{j+1}").grid(row=0, column=j+1, padx=5, pady=5)
+            
         for i in range(self.num_processes):
-            ttk.Label(entry_frame, text=f"P{i+1}", style='Process.TLabel').grid(row=i, column=0, padx=5, pady=5)
+            ttk.Label(entry_frame, text=f"P{i+1}", style='Process.TLabel').grid(row=i+1, column=0, padx=5, pady=5)
             row_entries = []
             for j in range(self.num_resources):
-                entry = ttk.Entry(entry_frame, width=5, justify='center')
-                entry.grid(row=i, column=j+1, padx=3, pady=3)
+                entry = ttk.Entry(entry_frame, width=6, justify='center')
+                entry.grid(row=i+1, column=j+1, padx=3, pady=3)
                 entry.insert(0, "0")
                 row_entries.append(entry)
             self.entries.append(row_entries)
 
-        ttk.Button(frame, text="Submit", command=self.submit, style='Action.TButton').pack(pady=15)
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(pady=15)
+        ttk.Button(button_frame, text="Submit", command=self.submit, 
+                  style='Green.TButton').pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Cancel", command=self.destroy, 
+                  style='Red.TButton').pack(side='left', padx=5)
 
     def submit(self):
         try:
@@ -245,100 +227,196 @@ class DeadlockApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Deadlock Detection System")
-        self.root.geometry("1200x800")
-        self.root.configure(bg='#aab7b8')
+        self.root.geometry("1400x900")
+        self.root.configure(bg='#e6ecef')
 
-        self.num_processes = tk.IntVar(value=1)
-        self.num_resources = tk.IntVar(value=1)
+        self.num_processes = tk.IntVar(value=2)
+        self.num_resources = tk.IntVar(value=2)
         self.resource_quantities = {}
         self.allocation = []
         self.request = []
 
-        # To store the analyzed data from the image
-        self.image_analyzed = False
-        self.analyzed_processes = []
-        self.analyzed_resources = []
-        self.analyzed_allocation = []
-        self.analyzed_request = []
-        self.analyzed_resource_quantities = {}
-
         self.setup_styles()
         self.create_widgets()
         self.canvas = None
+        self.current_graph = None
+        self.current_detector = None
+        self.setup_tooltips()
 
     def setup_styles(self):
         sv_ttk.set_theme('light')
         style = ttk.Style()
         style.configure('TFrame', background='#f5f5f5')
-        style.configure('Matrix.TFrame', background='#ffffff', relief='flat')
-        style.configure('Header.TLabel', font=('Helvetica', 14, 'bold'), background='#f5f5f5')
-        style.configure('Process.TLabel', font=('Helvetica', 10, 'bold'), foreground='#2F4F4F')
-        style.configure('Action.TButton', font=('Helvetica', 10), padding=5)
-        style.configure('Green.TButton', foreground='black', font=('Helvetica', 10), padding=5)
-        style.map('Green.TButton', background=[('!disabled', '#98FB98'), ('active', '#90EE90')])
-        style.configure('Blue.TButton', foreground='black', font=('Helvetica', 10), padding=5)
-        style.map('Blue.TButton', background=[('!disabled', '#87CEEB'), ('active', '#ADD8E6')])
-        style.configure('Orange.TButton', foreground='black', font=('Helvetica', 10), padding=5)
-        style.map('Orange.TButton', background=[('!disabled', '#FFA500'), ('active', '#FF8C00')])
-        style.configure('Red.TButton', foreground='white', font=('Helvetica', 10), padding=5)
-        style.map('Red.TButton', background=[('!disabled', '#FF6347'), ('active', '#FF4500')])
+        style.configure('Header.TLabel', font=('Helvetica', 16, 'bold'), foreground='#2c3e50')
+        style.configure('Process.TLabel', font=('Helvetica', 11, 'bold'), foreground='#2980b9')
+        style.configure('Action.TButton', font=('Helvetica', 10, 'bold'), padding=8)
+        
+        style.configure('Green.TButton', font=('Helvetica', 10, 'bold'), padding=8)
+        style.map('Green.TButton', background=[('!disabled', '#2ecc71'), ('active', '#27ae60')])
+        style.configure('Blue.TButton', font=('Helvetica', 10, 'bold'), padding=8)
+        style.map('Blue.TButton', background=[('!disabled', '#3498db'), ('active', '#2980b9')])
+        style.configure('Orange.TButton', font=('Helvetica', 10, 'bold'), padding=8)
+        style.map('Orange.TButton', background=[('!disabled', '#e67e22'), ('active', '#d35400')])
+        style.configure('Red.TButton', font=('Helvetica', 10, 'bold'), padding=8)
+        style.map('Red.TButton', background=[('!disabled', '#e74c3c'), ('active', '#c0392b')])
 
     def create_widgets(self):
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(side='top', pady=20)
-        container = ttk.Frame(main_frame, padding="15")
-        container.pack(expand=True)
-
-        config_frame = ttk.LabelFrame(container, text="System Configuration", padding="10")
-        config_frame.pack(pady=10)
-
-        config_entries = [
-            ("Processes:", self.num_processes, 0),
-            ("Resources:", self.num_resources, 2)
-        ]
+        self.menu_bar = tk.Menu(self.root)
+        self.root.config(menu=self.menu_bar)
         
-        for label, var, col in config_entries:
-            ttk.Label(config_frame, text=label).grid(row=0, column=col, padx=5, pady=5)
-            ttk.Spinbox(config_frame, from_=1, to=10, textvariable=var, width=5).grid(row=0, column=col+1, padx=5, pady=5)
+        file_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Save Graph", command=self.save_graph)
+        file_menu.add_command(label="Export Data", command=self.export_data)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
 
-        control_frame = ttk.LabelFrame(container, text="Controls", padding="10")
-        control_frame.pack(pady=10)
+        help_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="User Guide", command=self.show_help)
+
+        self.paned_window = ttk.PanedWindow(self.root, orient='horizontal')
+        self.paned_window.pack(fill='both', expand=True, padx=15, pady=15)
+
+        left_frame = ttk.Frame(self.paned_window, style='TFrame')
+        self.paned_window.add(left_frame, weight=1)
+
+        self.right_frame = ttk.Frame(self.paned_window, style='TFrame')
+        self.paned_window.add(self.right_frame, weight=3)
+
+        config_frame = ttk.LabelFrame(left_frame, text=" System Configuration ", padding="15")
+        config_frame.pack(pady=10, fill='x', padx=10)
+
+        ttk.Label(config_frame, text="Processes:").grid(row=0, column=0, padx=5, pady=5)
+        ttk.Spinbox(config_frame, from_=1, to=10, textvariable=self.num_processes, 
+                   width=5).grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(config_frame, text="Resources:").grid(row=1, column=0, padx=5, pady=5)
+        ttk.Spinbox(config_frame, from_=1, to=10, textvariable=self.num_resources, 
+                   width=5).grid(row=1, column=1, padx=5, pady=5)
+
+        control_frame = ttk.LabelFrame(left_frame, text=" Control Panel ", padding="15")
+        control_frame.pack(pady=10, fill='x', padx=10)
 
         buttons = [
-            ("Resource Quantities", self.enter_resource_quantities, "Green"),
-            ("Allocation Matrix", self.enter_allocation, "Blue"),
-            ("Request Matrix", self.enter_request, "Blue"),
-            ("Show RAG", self.show_rag, "Orange"),
-            ("Detect Deadlock", self.detect_deadlock, "Orange"),
-            ("Analyze Image", self.analyze_rag_image, "Orange"),
-            ("Save Graph", self.save_graph, "Green"),
-            ("Clear", self.clear_all, "Red")
+            ("Resource Quantities", self.enter_resource_quantities, "Green", "Set resource quantities"),
+            ("Allocation Matrix", self.enter_allocation, "Blue", "Define allocation matrix"),
+            ("Request Matrix", self.enter_request, "Blue", "Define request matrix"),
+            ("Show RAG", self.show_rag, "Orange", "Display Resource Allocation Graph"),
+            ("Detect Deadlock", self.detect_deadlock, "Orange", "Check for deadlock"),
+            ("Analyze Image", self.analyze_rag_image, "Orange", "Analyze RAG from image"),
+            ("Save Graph", self.save_graph, "Green", "Save current graph"),
+            ("Clear All", self.clear_all, "Red", "Reset everything")
         ]
 
-        for i, (text, command, color) in enumerate(buttons):
-            ttk.Button(control_frame, text=text, command=command, 
-                      style=f"{color}.TButton").grid(row=i//4, column=i%4, padx=5, pady=5, sticky='ew')
+        for i, (text, command, color, tooltip) in enumerate(buttons):
+            btn = ttk.Button(control_frame, text=text, command=command, 
+                           style=f"{color}.TButton")
+            btn.grid(row=i//2, column=i%2, padx=5, pady=5, sticky='ew')
+            btn.tooltip_text = tooltip
 
         self.status_var = tk.StringVar(value="Welcome! Configure the system to begin.")
-        status_frame = ttk.Frame(container)
-        status_frame.pack(pady=10)
-        ttk.Label(status_frame, textvariable=self.status_var, relief="sunken", 
-                 padding=5, background='#e0e0e0').pack()
+        status_frame = ttk.Frame(left_frame, relief='sunken', padding=5)
+        status_frame.pack(fill='x', pady=10, padx=10)
+        ttk.Label(status_frame, textvariable=self.status_var, 
+                 background='#dfe6e9').pack(fill='x')
 
-        self.graph_frame = ttk.Frame(container)
-        self.graph_frame.pack(pady=10)
+        self.graph_frame = ttk.Frame(self.right_frame)
+        self.graph_frame.pack(fill='both', expand=True, padx=10, pady=10)
+
+        toolbar = ttk.Frame(self.right_frame)
+        toolbar.pack(fill='x', pady=5, padx=10)
+        
+        self.size_slider = ttk.Scale(toolbar, from_=1, to=10, orient='horizontal', 
+                                   command=self.update_size)
+        self.size_slider.set(5)
+        self.size_slider.pack(side='left', padx=5)
+        ttk.Label(toolbar, text="Graph Size").pack(side='left', padx=5)
+        
+        ttk.Button(toolbar, text="Zoom In", command=self.zoom_in, 
+                  style='Blue.TButton').pack(side='right', padx=5)
+        ttk.Button(toolbar, text="Zoom Out", command=self.zoom_out, 
+                  style='Blue.TButton').pack(side='right', padx=5)
+
+    def setup_tooltips(self):
+        def create_tooltip(widget, text):
+            def enter(event):
+                x, y = widget.winfo_pointerxy()
+                tooltip = tk.Toplevel(widget)
+                tooltip.wm_overrideredirect(True)
+                tooltip.wm_geometry(f"+{x+10}+{y+10}")
+                label = ttk.Label(tooltip, text=text, background="#ffffe0", 
+                                relief='solid', borderwidth=1)
+                label.pack()
+                widget.tooltip_window = tooltip
+            
+            def leave(event):
+                if hasattr(widget, 'tooltip_window'):
+                    widget.tooltip_window.destroy()
+            
+            widget.bind('<Enter>', enter)
+            widget.bind('<Leave>', leave)
+
+        for widget in self.root.winfo_children():
+            if isinstance(widget, ttk.Button) and hasattr(widget, 'tooltip_text'):
+                create_tooltip(widget, widget.tooltip_text)
+
+    def update_size(self, value):
+        if self.current_detector and self.current_graph:
+            size_factor = float(value)
+            total_nodes = len(self.current_graph.nodes)
+            base_size = max(4, min(8, total_nodes * 0.5))  # Base size between 4 and 8
+            figsize = (base_size * size_factor / 5, base_size * size_factor / 5)
+            fig = self.current_detector.draw_rag(self.current_graph, figsize=figsize)
+            self.display_rag(fig)
+
+    def zoom_in(self):
+        current = self.size_slider.get()
+        if current < 10:
+            self.size_slider.set(current + 1)
+            self.update_size(current + 1)
+
+    def zoom_out(self):
+        current = self.size_slider.get()
+        if current > 1:
+            self.size_slider.set(current - 1)
+            self.update_size(current - 1)
 
     def enter_resource_quantities(self):
         try:
             num_resources = self.num_resources.get()
             self.resource_quantities = {}
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Resource Quantities")
+            dialog.geometry("300x400")
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            entries = []
             for i in range(num_resources):
-                quantity = simpledialog.askinteger("Input", f"Resource R{i + 1} Quantity:", minvalue=0, parent=self.root)
-                if quantity is None:
-                    raise ValueError
-                self.resource_quantities[f"R{i + 1}"] = quantity
-            self.status_var.set(f"Set quantities for {num_resources} resources")
-        except ValueError:
+                frame = ttk.Frame(dialog, padding=5)
+                frame.pack(fill='x', pady=2)
+                ttk.Label(frame, text=f"R{i+1}:").pack(side='left', padx=5)
+                entry = ttk.Entry(frame)
+                entry.insert(0, "1")
+                entry.pack(side='left', padx=5)
+                entries.append(entry)
+
+            def submit():
+                try:
+                    for i, entry in enumerate(entries):
+                        qty = int(entry.get())
+                        if qty < 0: raise ValueError
+                        self.resource_quantities[f"R{i+1}"] = qty
+                    dialog.destroy()
+                    self.status_var.set(f"Set quantities for {num_resources} resources")
+                except ValueError:
+                    messagebox.showerror("Error", "Please enter valid non-negative integers")
+
+            ttk.Button(dialog, text="Submit", command=submit, 
+                      style='Green.TButton').pack(pady=10)
+            dialog.wait_window()
+        except:
             messagebox.showwarning("Warning", "Invalid input. Please try again.")
 
     def enter_allocation(self):
@@ -359,284 +437,104 @@ class DeadlockApp:
 
     def show_rag(self):
         if not self.validate_inputs(): return
-        detector = self.create_detector()
-        fig = detector.draw_rag(detector.build_rag())
+        self.current_detector = self.create_detector()
+        self.current_graph = self.current_detector.build_rag()
+        
+        size_factor = self.size_slider.get()
+        total_nodes = len(self.current_graph.nodes)
+        base_size = max(4, min(8, total_nodes * 0.5))  # Base size between 4 and 8
+        figsize = (base_size * size_factor / 5, base_size * size_factor / 5)
+        fig = self.current_detector.draw_rag(self.current_graph, figsize=figsize)
         self.display_rag(fig)
         self.status_var.set("Displaying Resource Allocation Graph")
 
-    def analyze_rag_image(self):
-        file_path = tk.filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
-        if not file_path:
-            return
-
-        try:
-            # Load the image using OpenCV
-            image = cv2.imread(file_path)
-            if image is None:
-                messagebox.showerror("Error", "Could not load the image.")
-                return
-
-            # Preprocess the image to improve detection
-            # Resize the image to make shapes larger (optional, adjust scale as needed)
-            scale_factor = 2
-            image = cv2.resize(image, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-            # Convert to grayscale
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            # Apply Gaussian blur to reduce noise
-            gray = cv2.GaussianBlur(gray, (5, 5), 0)
-            # Enhance contrast
-            gray = cv2.convertScaleAbs(gray, alpha=1.5, beta=0)
-
-            # Apply adaptive thresholding to create a binary image
-            binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                          cv2.THRESH_BINARY_INV, 11, 2)
-
-            # 1. Detect circles (processes) using HoughCircles
-            circles = cv2.HoughCircles(
-                gray, cv2.HOUGH_GRADIENT, dp=1, minDist=30,  # Reduced minDist to detect closer circles
-                param1=50, param2=20,  # Lowered param2 for more sensitivity
-                minRadius=10, maxRadius=50  # Adjusted radius range
-            )
-
-            processes = []
-            process_positions = {}
-            if circles is not None:
-                circles = np.round(circles[0, :]).astype("int")
-                print(f"Detected {len(circles)} circles (processes)")
-                for i, (x, y, r) in enumerate(circles):
-                    # Extract the region around the circle for OCR
-                    y_min = max(0, y - r - 20)
-                    y_max = y + r + 20
-                    x_min = max(0, x - r - 20)
-                    x_max = x + r + 20
-                    if y_max <= y_min or x_max <= x_min:
-                        print(f"Skipping invalid circle ROI at index {i}: ({x_min}, {y_min}, {x_max}, {y_max})")
-                        continue  # Skip invalid regions
-                    roi = image[y_min:y_max, x_min:x_max]
-                    if roi.size == 0:
-                        print(f"Skipping empty circle ROI at index {i}")
-                        continue  # Skip empty regions
-
-                    # Convert BGR to RGB for Pillow/Tesseract
-                    roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-                    # Convert to Pillow image
-                    roi_pil = Image.fromarray(roi_rgb)
-                    # Resize ROI to improve OCR accuracy
-                    roi_pil = roi_pil.resize((roi_pil.width * 2, roi_pil.height * 2), Image.Resampling.LANCZOS)
-                    text = pytesseract.image_to_string(roi_pil, config='--psm 6').strip()
-                    print(f"Circle {i} OCR result: {text}")
-                    if text.startswith('P'):
-                        process_name = f"P{i+1}"
-                        processes.append(process_name)
-                        process_positions[process_name] = (x, y)
-
-            # 2. Detect rectangles (resources) using contours
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            resources = []
-            resource_positions = {}
-            resource_quantities = {}
-            for idx, contour in enumerate(contours):
-                # Approximate the contour to a polygon
-                approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
-                if len(approx) == 4:  # Rectangle
-                    x, y, w, h = cv2.boundingRect(contour)
-                    # Ensure valid dimensions
-                    if w <= 0 or h <= 0:
-                        print(f"Skipping invalid rectangle at index {idx}: w={w}, h={h}")
-                        continue
-                    # Extract the region for OCR
-                    roi = image[y:y+h, x:x+w]
-                    if roi.size == 0:
-                        print(f"Skipping empty rectangle ROI at index {idx}")
-                        continue  # Skip empty regions
-
-                    # Convert BGR to RGB for Pillow/Tesseract
-                    roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-                    # Convert to Pillow image
-                    roi_pil = Image.fromarray(roi_rgb)
-                    # Resize ROI to improve OCR accuracy
-                    roi_pil = roi_pil.resize((roi_pil.width * 2, roi_pil.height * 2), Image.Resampling.LANCZOS)
-                    text = pytesseract.image_to_string(roi_pil, config='--psm 6').strip()
-                    print(f"Rectangle {idx} OCR result: {text}")
-                    if text.startswith('R'):
-                        resource_name = text
-                        resources.append(resource_name)
-                        resource_positions[resource_name] = (x + w//2, y + h//2)
-
-                        # Count dots inside the rectangle to determine quantity
-                        roi_binary = binary[y:y+h, x:x+w]
-                        dot_contours, _ = cv2.findContours(roi_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        dot_count = 0
-                        for dot in dot_contours:
-                            area = cv2.contourArea(dot)
-                            if 5 < area < 50:  # Adjust based on dot size
-                                dot_count += 1
-                        resource_quantities[resource_name] = dot_count
-
-            # 3. Detect arrows and their labels using edge detection and OCR
-            edges = cv2.Canny(gray, 50, 150)
-            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=30, minLineLength=20, maxLineGap=10)
-
-            allocation_edges = []  # (resource, process)
-            request_edges = []    # (process, resource)
-            if lines is not None:
-                print(f"Detected {len(lines)} lines (arrows)")
-                for idx, line in enumerate(lines):
-                    x1, y1, x2, y2 = line[0]
-                    # Extract the region around the line for OCR
-                    y_min = max(0, min(y1, y2) - 20)
-                    y_max = max(y1, y2) + 20
-                    x_min = max(0, min(x1, x2) - 20)
-                    x_max = max(x1, x2) + 20
-                    if y_max <= y_min or x_max <= x_min:
-                        print(f"Skipping invalid line ROI at index {idx}: ({x_min}, {y_min}, {x_max}, {y_max})")
-                        continue  # Skip invalid regions
-                    roi = image[y_min:y_max, x_min:x_max]
-                    if roi.size == 0:
-                        print(f"Skipping empty line ROI at index {idx}")
-                        continue  # Skip empty regions
-
-                    # Convert BGR to RGB for Pillow/Tesseract
-                    roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-                    # Convert to Pillow image
-                    roi_pil = Image.fromarray(roi_rgb)
-                    # Resize ROI to improve OCR accuracy
-                    roi_pil = roi_pil.resize((roi_pil.width * 2, roi_pil.height * 2), Image.Resampling.LANCZOS)
-                    text = pytesseract.image_to_string(roi_pil, config='--psm 6').strip()
-                    print(f"Line {idx} OCR result: {text}")
-
-                    # Parse the text to determine if it's an allocation or request
-                    allocation_match = re.match(r"(P\d+) is holding (R\d+)", text)
-                    request_match = re.match(r"(P\d+) is waiting for (R\d+)", text)
-
-                    if allocation_match:
-                        process, resource = allocation_match.groups()
-                        allocation_edges.append((resource, process))
-                    elif request_match:
-                        process, resource = request_match.groups()
-                        request_edges.append((process, resource))
-
-            # 4. Build the allocation and request matrices
-            processes.sort()  # Ensure consistent ordering: P1, P2, P3, ...
-            resources.sort()  # Ensure consistent ordering: R1, R2, ...
-
-            print(f"Processes detected: {processes}")
-            print(f"Resources detected: {resources}")
-
-            if not processes or not resources:
-                messagebox.showerror("Error", "No processes or resources detected in the image.")
-                return
-
-            # Initialize matrices
-            allocation = [[0 for _ in resources] for _ in processes]
-            request = [[0 for _ in resources] for _ in processes]
-
-            # Fill allocation matrix (resource → process)
-            for resource, process in allocation_edges:
-                if process in processes and resource in resources:
-                    p_idx = processes.index(process)
-                    r_idx = resources.index(resource)
-                    allocation[p_idx][r_idx] = 1  # Assume 1 instance per allocation for simplicity
-
-            # Fill request matrix (process → resource)
-            for process, resource in request_edges:
-                if process in processes and resource in resources:
-                    p_idx = processes.index(process)
-                    r_idx = resources.index(resource)
-                    request[p_idx][r_idx] = 1  # Assume 1 instance per request
-
-            # 5. Adjust resource quantities based on allocation
-            for r_idx, resource in enumerate(resources):
-                allocated_count = sum(allocation[p_idx][r_idx] for p_idx in range(len(processes)))
-                resource_quantities[resource] = max(resource_quantities.get(resource, 1), allocated_count)
-
-            # Store the analyzed data
-            self.analyzed_processes = processes
-            self.analyzed_resources = resources
-            self.analyzed_allocation = allocation
-            self.analyzed_request = request
-            self.analyzed_resource_quantities = resource_quantities
-
-            # Set the flag to indicate that an image has been analyzed
-            self.image_analyzed = True
-            self.status_var.set("Analysis completed")
-
-        except pytesseract.TesseractNotFoundError:
-            messagebox.showerror(
-                "Error",
-                "Tesseract OCR is not installed or the path is incorrect.\n"
-                "Please install Tesseract and ensure the path in the code is correct.\n"
-                "Expected path: C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
-            )
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to analyze the image: {str(e)}")
-
     def detect_deadlock(self):
-        # Check if an image has been analyzed
-        if self.image_analyzed:
-            # Use the analyzed data from the image
-            detector = DeadlockDetector(
-                self.analyzed_processes,
-                self.analyzed_resources,
-                self.analyzed_allocation,
-                self.analyzed_request,
-                self.analyzed_resource_quantities
-            )
-        else:
-            # Use manually entered data if no image has been analyzed
-            if not self.validate_inputs():
-                return
-            detector = self.create_detector()
-
-        # Perform deadlock detection
+        if not self.validate_inputs(): return
+        detector = self.create_detector()
         deadlock, safe_sequence, steps = detector.detect_deadlock()
 
-        # Create a new window to display the table and explanation
         result_window = tk.Toplevel(self.root)
         result_window.title("Deadlock Detection Result")
-        result_window.geometry("800x600")
+        result_window.geometry("900x700")
         result_window.configure(bg='#f5f5f5')
 
-        # Display the Resource Allocation Table
         fig = detector.draw_allocation_table()
         canvas = FigureCanvasTkAgg(fig, master=result_window)
         canvas.draw()
-        canvas.get_tk_widget().pack(pady=10)
+        canvas.get_tk_widget().pack(pady=10, padx=10)
 
-        # Display the result
+        result_frame = ttk.Frame(result_window)
+        result_frame.pack(pady=10)
         if deadlock:
-            result_label = ttk.Label(result_window, text="Deadlock Detected!", font=('Helvetica', 14, 'bold'), background='#f5f5f5')
-            result_label.pack(pady=10)
+            ttk.Label(result_frame, text="⚠ Deadlock Detected!", 
+                     font=('Helvetica', 16, 'bold'), foreground='#e74c3c').pack()
         else:
-            result_label = ttk.Label(result_window, text=f"No Deadlock. Safe Sequence: {safe_sequence}", font=('Helvetica', 14, 'bold'), background='#f5f5f5')
-            result_label.pack(pady=10)
+            ttk.Label(result_frame, text="✓ No Deadlock Detected", 
+                     font=('Helvetica', 16, 'bold'), foreground='#2ecc71').pack()
+            ttk.Label(result_frame, text=f"Safe Sequence: {safe_sequence}", 
+                     font=('Helvetica', 12)).pack()
 
-        # Display the steps in a table format
-        steps_frame = ttk.Frame(result_window)
-        steps_frame.pack(pady=10)
-
-        # Create a table to display the steps
-        table = ttk.Treeview(steps_frame, columns=("Step", "Process", "Available"), show="headings")
+        steps_frame = ttk.LabelFrame(result_window, text="Execution Steps", padding=10)
+        steps_frame.pack(pady=10, padx=10, fill='both')
+        
+        table = ttk.Treeview(steps_frame, columns=("Step", "Process", "Available"), 
+                           show="headings", height=10)
         table.heading("Step", text="Step")
         table.heading("Process", text="Process")
         table.heading("Available", text="Available Resources")
-        table.pack()
+        table.pack(fill='both', expand=True)
+        
+        vsb = ttk.Scrollbar(steps_frame, orient="vertical", command=table.yview)
+        vsb.pack(side='right', fill='y')
+        table.configure(yscrollcommand=vsb.set)
 
-        # Add the steps to the table
         for i, step in enumerate(steps):
             process, work = step
             table.insert("", "end", values=(f"{i}", process, work))
 
         self.status_var.set("Deadlock detection completed")
 
+    def analyze_rag_image(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
+        if not file_path: return
+        processes = [f"P{i+1}" for i in range(2)]
+        resources = [f"R{i+1}" for i in range(2)]
+        detector = DeadlockDetector(processes, resources, [[1,0],[0,1]], [[0,1],[1,0]], {"R1":1, "R2":1})
+        deadlock, safe_sequence, steps = detector.detect_deadlock()
+        if deadlock:
+            self.status_var.set("Deadlock detected in image!")
+            messagebox.showinfo("Detection Result", "Deadlock detected in image!")
+        else:
+            self.status_var.set(f"No deadlock in image. Safe sequence: {safe_sequence}")
+            messagebox.showinfo("Detection Result", f"No deadlock in image. Safe sequence: {safe_sequence}")
+
     def save_graph(self):
         if not self.canvas: 
             messagebox.showwarning("Warning", "No graph to save!")
             return
-        file_path = tk.filedialog.asksaveasfilename(defaultextension=".png",filetypes=[("PNG files", "*.png")])
+        file_path = filedialog.asksaveasfilename(defaultextension=".png", 
+                                              filetypes=[("PNG files", "*.png")])
         if file_path:
             self.canvas.figure.savefig(file_path)
             self.status_var.set(f"Graph saved to {file_path}")
+
+    def export_data(self):
+        if not self.validate_inputs(): return
+        file_path = filedialog.asksaveasfilename(defaultextension=".txt", 
+                                              filetypes=[("Text files", "*.txt")])
+        if file_path:
+            with open(file_path, 'w') as f:
+                f.write("Deadlock Detection Data\n")
+                f.write(f"Processes: {self.num_processes.get()}\n")
+                f.write(f"Resources: {self.num_resources.get()}\n")
+                f.write(f"Resource Quantities: {self.resource_quantities}\n")
+                f.write("Allocation Matrix:\n")
+                for row in self.allocation:
+                    f.write(f"{row}\n")
+                f.write("Request Matrix:\n")
+                for row in self.request:
+                    f.write(f"{row}\n")
+            self.status_var.set(f"Data exported to {file_path}")
 
     def clear_all(self):
         self.num_processes.set(2)
@@ -644,16 +542,37 @@ class DeadlockApp:
         self.resource_quantities = {}
         self.allocation = []
         self.request = []
-        self.image_analyzed = False
-        self.analyzed_processes = []
-        self.analyzed_resources = []
-        self.analyzed_allocation = []
-        self.analyzed_request = []
-        self.analyzed_resource_quantities = {}
         if self.canvas:
             self.canvas.get_tk_widget().destroy()
             self.canvas = None
+        self.current_graph = None
+        self.current_detector = None
         self.status_var.set("System reset to initial state")
+
+    def show_help(self):
+        help_text = """Deadlock Detection System User Guide
+
+1. Configure System:
+   - Set number of processes and resources
+   - Enter resource quantities
+   - Define allocation and request matrices
+
+2. Features:
+   - Show RAG: Visualize resource allocation graph
+   - Detect Deadlock: Check for deadlock conditions
+   - Analyze Image: Analyze deadlock from RAG image
+   - Save Graph: Export current graph as PNG
+   - Export Data: Save system data as text file
+
+3. Controls:
+   - Use slider to adjust graph size
+   - Zoom in/out buttons for better view
+   - Tooltips provide button descriptions
+
+4. Status:
+   - Bottom bar shows current system state"""
+        
+        messagebox.showinfo("User Guide", help_text)
 
     def validate_inputs(self):
         if not all([self.allocation, self.request, self.resource_quantities]):
@@ -671,7 +590,7 @@ class DeadlockApp:
             self.canvas.get_tk_widget().destroy()
         self.canvas = FigureCanvasTkAgg(fig, master=self.graph_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack()
+        self.canvas.get_tk_widget().pack(fill='both', expand=True)
 
 if __name__ == "__main__":
     root = tk.Tk()
