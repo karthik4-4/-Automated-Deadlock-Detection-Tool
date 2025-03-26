@@ -61,65 +61,47 @@ class DeadlockDetector:
             return True, [], steps
 
     def draw_rag(self, G, cycle_edges=None, figsize=(8, 6)):
-        # Use spring_layout with increased k for better node separation
-        pos = nx.spring_layout(G, seed=42, k=1.0)  # Increased k for more spacing between nodes
-        
+        pos = nx.spring_layout(G, seed=42, k=1.0)
         fig, ax = plt.subplots(figsize=figsize)
         
-        # Draw process nodes (circles)
         process_nodes = [node for node in G.nodes if G.nodes[node]['type'] == 'process']
         nx.draw_networkx_nodes(G, pos, nodelist=process_nodes, node_shape='o', 
                              node_color='#87CEEB', node_size=1500, alpha=0.9, ax=ax)
         
-        # Draw resource nodes (squares)
         resource_nodes = [node for node in G.nodes if G.nodes[node]['type'] == 'resource']
         nx.draw_networkx_nodes(G, pos, nodelist=resource_nodes, node_shape='s',
                              node_color='#98FB98', node_size=1000, alpha=0.9, ax=ax)
 
-        # Draw labels
         labels = {node: f"{node}\n({G.nodes[node].get('quantity', '')})" if G.nodes[node]['type'] == 'resource' 
                  else node for node in G.nodes}
         nx.draw_networkx_labels(G, pos, labels, font_size=10, font_weight='bold', ax=ax)
 
-        # Separate edges into allocation and request
         allocation_edges = [(u, v) for u, v, d in G.edges(data=True) if d['type'] == 'allocation']
         request_edges = [(u, v) for u, v, d in G.edges(data=True) if d['type'] == 'request']
 
-        # Function to calculate dynamic rad based on node distance
         def calculate_rad(u, v, base_rad=0.3):
-            # Calculate Euclidean distance between nodes
             dist = np.linalg.norm(np.array(pos[u]) - np.array(pos[v]))
-            # Scale rad inversely with distance (closer nodes get larger rad)
-            return base_rad * (1.5 / max(dist, 0.1))  # Avoid division by zero
+            return base_rad * (1.5 / max(dist, 0.1))
 
-        # Draw allocation edges (resource to process) with solid blue line
         for u, v in allocation_edges:
             rad = calculate_rad(u, v, base_rad=0.3)
             nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], edge_color='blue', 
                                  width=2, arrows=True, arrowsize=15, ax=ax, 
                                  connectionstyle=f"arc3,rad={rad}")
 
-        # Draw request edges (process to resource) with dashed red line
         for u, v in request_edges:
             rad = calculate_rad(u, v, base_rad=-0.3)
             nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], edge_color='red', 
                                  width=2, arrows=True, arrowsize=15, ax=ax, 
                                  style='dashed', connectionstyle=f"arc3,rad={rad}")
 
-        # Draw edge labels with offset to avoid overlap
         edge_labels = {(u, v): f"{d['weight']}" for u, v, d in G.edges(data=True)}
         for (u, v), label in edge_labels.items():
-            # Calculate the midpoint of the edge
             x = (pos[u][0] + pos[v][0]) / 2
             y = (pos[u][1] + pos[v][1]) / 2
-            # Offset the label slightly based on the edge type
-            if (u, v) in allocation_edges:
-                offset = 0.05  # Move allocation labels slightly up
-            else:
-                offset = -0.05  # Move request labels slightly down
+            offset = 0.05 if (u, v) in allocation_edges else -0.05
             ax.text(x, y + offset, label, fontsize=8, ha='center', va='center')
 
-        # Highlight cycle edges if any
         if cycle_edges:
             nx.draw_networkx_edges(G, pos, edgelist=[(u, v) for u, v, _ in cycle_edges], 
                                  edge_color='red', width=3, arrows=True, arrowsize=25, 
@@ -132,67 +114,65 @@ class DeadlockDetector:
         return fig
 
     def draw_allocation_table(self):
-        # Dynamically calculate figure size based on number of processes and resources
         num_resources = len(self.resources)
         num_processes = len(self.processes)
-        fig_width = max(8, 2 + num_resources * 2)  # Width scales with number of resources
-        fig_height = max(4, 2 + num_processes * 0.5)  # Height scales with number of processes
+        fig_width = max(8, 2 + num_resources * 2)
+        fig_height = max(4, 2 + num_processes * 0.5)
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         ax.axis('off')
 
-        # Prepare table data
         allocation_data = np.array(self.allocation)
         request_data = np.array(self.request)
-        combined_data = np.hstack((allocation_data, request_data))
 
-        # Prepare the table data rows
-        row_data = []
+        total_columns = 1 + num_resources * 2
+        table_data = []
+
+        # First header row: Only "Process" and resource labels (R1, R2, R3, R1, R2, R3)
+        # We'll add "Allocation" and "Request" using ax.text
+        header_row1 = ["Process"] + self.resources + self.resources
+        table_data.append(header_row1)
+
+        # Data rows
         for i in range(len(self.processes)):
             row = [self.processes[i]] + list(allocation_data[i]) + list(request_data[i])
-            row_data.append(row)
+            table_data.append(row)
 
-        # Prepare the column labels
-        # First row: "Process", "Allocation", "Request"
-        # Second row: "", R1, R2, ..., R1, R2, ...
-        col_labels = [""] + self.resources + self.resources  # Second row labels
+        col_widths = [0.15] + [0.1] * (num_resources * 2)
 
-        # Calculate column widths dynamically
-        total_columns = 1 + num_resources * 2  # Process + Allocation + Request
-        col_widths = [0.15] + [0.1] * (num_resources * 2)  # Process column wider, others equal
-
-        # Create a table with an extra row for the header
-        table_data = row_data
-        table = ax.table(cellText=table_data, colLabels=col_labels, colWidths=col_widths,
+        # Create the table (starting with the resource labels as the first row)
+        table = ax.table(cellText=table_data, colWidths=col_widths,
                          loc='center', cellLoc='center', bbox=[0.1, 0.1, 0.8, 0.8])
 
-        # Customize table appearance
         table.auto_set_font_size(False)
         table.set_fontsize(10)
 
-        # Adjust the table cells for multi-row header
+        # Adjust the table cells
         cells = table.get_celld()
         for (i, j), cell in cells.items():
-            cell.set_height(0.1)  # Adjust cell height for better spacing
-            if i == 0:  # Header row
-                cell.set_text_props(weight='bold')
-
-        # Add the "Allocation" and "Request" labels as a second header row using a separate table
-        header_data = [["Process", "Allocation", "Request"]]
-        header_col_widths = [0.15, num_resources * 0.1, num_resources * 0.1]  # Span columns
-        header_table = ax.table(cellText=header_data, colWidths=header_col_widths,
-                                loc='center', cellLoc='center', bbox=[0.1, 0.8, 0.8, 0.1])
-
-        # Customize the header table
-        header_table.auto_set_font_size(False)
-        header_table.set_fontsize(12)
-        header_cells = header_table.get_celld()
-        for (i, j), cell in header_cells.items():
-            cell.set_text_props(weight='bold')
             cell.set_height(0.1)
+            if i == 0:  # Resource labels row
+                cell.set_text_props(weight='bold')
+                cell.set_facecolor('#f0f0f0')
 
-        # Merge the "Allocation" and "Request" cells to span multiple columns
-        header_cells[(0, 1)].set_text_props(text="Allocation")
-        header_cells[(0, 2)].set_text_props(text="Request")
+        # Add "Allocation" and "Request" labels above the table using ax.text
+        # Calculate the positions based on the table's bbox and column widths
+        bbox = table.get_window_extent(renderer=fig.canvas.get_renderer())
+        bbox = bbox.transformed(ax.transData.inverted())
+        x_min, y_max = bbox.x0, bbox.y1
+
+        # Calculate the center positions for "Allocation" and "Request"
+        process_width = col_widths[0]  # Width of the "Process" column
+        resource_width = col_widths[1]  # Width of each resource column
+        allocation_start_x = x_min + process_width
+        allocation_center_x = allocation_start_x + (num_resources * resource_width) / 2
+        request_start_x = allocation_start_x + num_resources * resource_width
+        request_center_x = request_start_x + (num_resources * resource_width) / 2
+
+        # Place "Allocation" and "Request" labels
+        ax.text(allocation_center_x, y_max + 0.05, "Allocation", 
+                ha='center', va='bottom', fontsize=10, fontweight='bold')
+        ax.text(request_center_x, y_max + 0.05, "Request", 
+                ha='center', va='bottom', fontsize=10, fontweight='bold')
 
         plt.tight_layout()
         return fig
@@ -271,11 +251,12 @@ class DeadlockApp:
         self.allocation = []
         self.request = []
 
+        self.current_detector = None
+        self.current_graph = None
+        self.canvas = None
+
         self.setup_styles()
         self.create_widgets()
-        self.canvas = None
-        self.current_graph = None
-        self.current_detector = None
         self.setup_tooltips()
 
     def setup_styles(self):
@@ -397,13 +378,17 @@ class DeadlockApp:
                 create_tooltip(widget, widget.tooltip_text)
 
     def update_size(self, value):
-        if self.current_detector and self.current_graph:
-            size_factor = float(value)
-            total_nodes = len(self.current_graph.nodes)
-            base_size = max(4, min(8, total_nodes * 0.5))  # Base size between 4 and 8
-            figsize = (base_size * size_factor / 5, base_size * size_factor / 5)
-            fig = self.current_detector.draw_rag(self.current_graph, figsize=figsize)
-            self.display_rag(fig)
+        if not hasattr(self, 'current_detector') or self.current_detector is None or \
+           not hasattr(self, 'current_graph') or self.current_graph is None:
+            self.status_var.set("Please generate the graph first by clicking 'Show RAG' or 'Detect Deadlock'.")
+            return
+
+        size_factor = float(value)
+        total_nodes = len(self.current_graph.nodes)
+        base_size = max(4, min(8, total_nodes * 0.5))
+        figsize = (base_size * size_factor / 5, base_size * size_factor / 5)
+        fig = self.current_detector.draw_rag(self.current_graph, figsize=figsize)
+        self.display_rag(fig)
 
     def zoom_in(self):
         current = self.size_slider.get()
@@ -477,7 +462,7 @@ class DeadlockApp:
         
         size_factor = self.size_slider.get()
         total_nodes = len(self.current_graph.nodes)
-        base_size = max(4, min(8, total_nodes * 0.5))  # Base size between 4 and 8
+        base_size = max(4, min(8, total_nodes * 0.5))
         figsize = (base_size * size_factor / 5, base_size * size_factor / 5)
         fig = self.current_detector.draw_rag(self.current_graph, figsize=figsize)
         self.display_rag(fig)
@@ -580,8 +565,8 @@ class DeadlockApp:
         if self.canvas:
             self.canvas.get_tk_widget().destroy()
             self.canvas = None
-        self.current_graph = None
         self.current_detector = None
+        self.current_graph = None
         self.status_var.set("System reset to initial state")
 
     def show_help(self):
