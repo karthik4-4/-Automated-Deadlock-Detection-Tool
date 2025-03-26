@@ -1,0 +1,10 @@
+Deadlock Detection Data
+Processes: 2
+Resources: 2
+Resource Quantities: {'R1': 1, 'R2': 1}
+Allocation Matrix:
+[1, 0]
+[0, 1]
+Request Matrix:
+[0, 1]
+[1, 0]
