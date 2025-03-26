@@ -131,35 +131,70 @@ class DeadlockDetector:
         plt.tight_layout()
         return fig
 
-    def draw_allocation_table(self, figsize=(8, 4)):
-        fig, ax = plt.subplots(figsize=figsize)
+    def draw_allocation_table(self):
+        # Dynamically calculate figure size based on number of processes and resources
+        num_resources = len(self.resources)
+        num_processes = len(self.processes)
+        fig_width = max(8, 2 + num_resources * 2)  # Width scales with number of resources
+        fig_height = max(4, 2 + num_processes * 0.5)  # Height scales with number of processes
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         ax.axis('off')
 
+        # Prepare table data
         allocation_data = np.array(self.allocation)
         request_data = np.array(self.request)
         combined_data = np.hstack((allocation_data, request_data))
 
+        # Prepare the table data rows
         row_data = []
         for i in range(len(self.processes)):
             row = [self.processes[i]] + list(allocation_data[i]) + list(request_data[i])
             row_data.append(row)
 
-        col_widths = [0.15] + [0.1] * (len(self.resources) * 2)
-        table = ax.table(cellText=row_data, loc='center', cellLoc='center',
-                         colWidths=col_widths, bbox=[0.1, 0.1, 0.8, 0.5])
+        # Prepare the column labels
+        # First row: "Process", "Allocation", "Request"
+        # Second row: "", R1, R2, ..., R1, R2, ...
+        col_labels = [""] + self.resources + self.resources  # Second row labels
+
+        # Calculate column widths dynamically
+        total_columns = 1 + num_resources * 2  # Process + Allocation + Request
+        col_widths = [0.15] + [0.1] * (num_resources * 2)  # Process column wider, others equal
+
+        # Create a table with an extra row for the header
+        table_data = row_data
+        table = ax.table(cellText=table_data, colLabels=col_labels, colWidths=col_widths,
+                         loc='center', cellLoc='center', bbox=[0.1, 0.1, 0.8, 0.8])
+
+        # Customize table appearance
         table.auto_set_font_size(False)
         table.set_fontsize(10)
 
-        ax.text(0.05, 0.35, "Process", fontsize=10, fontweight='bold', rotation=90, color='green', va='center')
-        ax.text(0.35, 0.75, "Allocation", fontsize=12, fontweight='bold', ha='center')
-        ax.text(0.65, 0.75, "Request", fontsize=12, fontweight='bold', ha='center')
-        ax.text(0.35, 0.65, "Resource", fontsize=10, fontweight='bold', ha='center')
-        ax.text(0.65, 0.65, "Resource", fontsize=10, fontweight='bold', ha='center')
+        # Adjust the table cells for multi-row header
+        cells = table.get_celld()
+        for (i, j), cell in cells.items():
+            cell.set_height(0.1)  # Adjust cell height for better spacing
+            if i == 0:  # Header row
+                cell.set_text_props(weight='bold')
 
-        for i in range(len(self.resources)):
-            ax.text(0.25 + (i + 1) * 0.1, 0.55, self.resources[i], fontsize=10, ha='center')
-            ax.text(0.55 + (i + 1) * 0.1, 0.55, self.resources[i], fontsize=10, ha='center')
+        # Add the "Allocation" and "Request" labels as a second header row using a separate table
+        header_data = [["Process", "Allocation", "Request"]]
+        header_col_widths = [0.15, num_resources * 0.1, num_resources * 0.1]  # Span columns
+        header_table = ax.table(cellText=header_data, colWidths=header_col_widths,
+                                loc='center', cellLoc='center', bbox=[0.1, 0.8, 0.8, 0.1])
 
+        # Customize the header table
+        header_table.auto_set_font_size(False)
+        header_table.set_fontsize(12)
+        header_cells = header_table.get_celld()
+        for (i, j), cell in header_cells.items():
+            cell.set_text_props(weight='bold')
+            cell.set_height(0.1)
+
+        # Merge the "Allocation" and "Request" cells to span multiple columns
+        header_cells[(0, 1)].set_text_props(text="Allocation")
+        header_cells[(0, 2)].set_text_props(text="Request")
+
+        plt.tight_layout()
         return fig
 
 class MatrixDialog(tk.Toplevel):
